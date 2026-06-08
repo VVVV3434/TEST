@@ -3,12 +3,12 @@ import asyncio
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import CommandStart
 
-TOKEN = os.getenv("8867608436:AAGRMJj26VODPBnE0Vte4dAXQ6zVArc73iE")
+BOT_TOKEN = os.getenv("8867608436:AAGRMJj26VODPBnE0Vte4dAXQ6zVArc73iE")
 
-if not TOKEN:
+if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN не найден. Проверь Environment Variables в Render.")
 
-bot = Bot(token=TOKEN)
+bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 
