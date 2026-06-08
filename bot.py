@@ -1,16 +1,33 @@
-from telegram import Update
-from telegram.ext import Application, MessageHandler, filters, ContextTypes
+import os
+import asyncio
+from aiogram import Bot, Dispatcher, types
+from aiogram.filters import CommandStart
 
-TOKEN = "8867608436:AAGRMJj26VODPBnE0Vte4dAXQ6zVArc73iE"
+TOKEN = os.getenv("BOT_TOKEN")
 
-async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(update.message.text)
+bot = Bot(token=TOKEN)
+dp = Dispatcher()
 
-app = Application.builder().token(TOKEN).build()
 
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
-message = event.raw_text.lower()
- if "привет" in message:
-        await event.reply("Привет 😈")
-        await event.reply("_ЭТО АВТООТВЕТЧИК_")
-app.run_polling()
+@dp.message(CommandStart())
+async def start(message: types.Message):
+    await message.answer("Привет! Бот работает 🚀")
+
+
+@dp.message()
+async def echo(message: types.Message):
+    text = message.text.lower()
+
+    if "привет" in text:
+        await message.answer("И тебе привет!")
+
+    else:
+        await message.answer(f"Ты написал: {message.text}")
+
+
+async def main():
+    await dp.start_polling(bot)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
