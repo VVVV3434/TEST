@@ -1,1 +1,4 @@
-aiogram
+python-telegram-bot[job-queue]==21.7
+requests==2.32.3
+beautifulsoup4==4.12.3
+flask==3.0.3
