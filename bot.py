@@ -15,7 +15,7 @@ SECRET_CODE = "5555"
 MIN_PRICE = 100
 MAX_PRICE = 200
 
-found_count = 0
+found_items = []
 
 web_app = Flask(__name__)
 
@@ -30,23 +30,23 @@ def run_web():
     web_app.run(host="0.0.0.0", port=port)
 
 
-def convert_to_rubles(price_text):
-    text = price_text.lower().replace(",", ".")
+def convert_to_rubles(text):
+    text = text.lower().replace(",", ".")
 
-    number_match = re.search(r"\d+(\.\d+)?", text)
-    if not number_match:
-        return None
+    price_match = re.search(r"(\d+(?:\.\d+)?)\s*(₽|руб|rub)", text)
 
-    price = float(number_match.group())
+    if price_match:
+        return float(price_match.group(1))
 
-    if "₽" in text or "руб" in text:
-        return price
+    dollar_match = re.search(r"\$(\d+(?:\.\d+)?)", text)
 
-    if "$" in text or "usd" in text:
-        return price * 90  # примерный курс
+    if dollar_match:
+        return float(dollar_match.group(1)) * 90
 
-    if "€" in text or "eur" in text:
-        return price * 100  # примерный курс
+    euro_match = re.search(r"€(\d+(?:\.\d+)?)", text)
+
+    if euro_match:
+        return float(euro_match.group(1)) * 100
 
     return None
 
@@ -61,12 +61,13 @@ def parse_funpay():
 
     soup = BeautifulSoup(response.text, "html.parser")
 
-    count = 0
+    items = []
 
     offers = soup.find_all("a", href=True)
 
     for offer in offers:
         text = offer.get_text(" ", strip=True)
+        href = offer["href"]
 
         if not text:
             continue
@@ -77,17 +78,23 @@ def parse_funpay():
             continue
 
         if MIN_PRICE <= rub_price <= MAX_PRICE:
-            count += 1
+            url = href if href.startswith("http") else "https://funpay.com" + href
 
-    return count
+            items.append({
+                "title": text[:120],
+                "price": int(rub_price),
+                "url": url
+            })
+
+    return items
 
 
 async def check_funpay(context: ContextTypes.DEFAULT_TYPE):
-    global found_count
+    global found_items
 
     try:
-        found_count = parse_funpay()
-        print(f"Найдено товаров: {found_count}")
+        found_items = parse_funpay()
+        print(f"Найдено товаров: {len(found_items)}")
 
     except Exception as e:
         print(f"Ошибка парсинга: {e}")
@@ -100,8 +107,28 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def secret_code_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message.text.strip()
 
-    if message == SECRET_CODE:
-        await update.message.reply_text(str(found_count))
+    if message != SECRET_CODE:
+        return
+
+    if not found_items:
+        await update.message.reply_text("0")
+        return
+
+    await update.message.reply_text(str(len(found_items)))
+
+    text = ""
+
+    for i, item in enumerate(found_items, start=1):
+        line = f"{i}. {item['price']} ₽ — {item['url']}\n"
+
+        if len(text) + len(line) > 3500:
+            await update.message.reply_text(text)
+            text = ""
+
+        text += line
+
+    if text:
+        await update.message.reply_text(text)
 
 
 def main():
