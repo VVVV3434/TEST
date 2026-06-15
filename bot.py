@@ -1,158 +1,135 @@
 import os
 import re
-import threading
-import requests
-from bs4 import BeautifulSoup
-from flask import Flask
+import asyncio
+import pandas as pd
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
+from telegram.ext import Application, MessageHandler, filters, ContextTypes
+from playwright.async_api import async_playwright
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-FUNPAY_URL = os.getenv("FUNPAY_URL")
+TOKEN = os.getenv("BOT_TOKEN")
+LIMIT = 50
+FILE_NAME = "hotels_spb_test.xlsx"
 
-SECRET_CODE = "5555"
+SEARCH_URLS = [
+    "https://yandex.ru/maps/2/saint-petersburg/search/отели/",
+    "https://yandex.ru/maps/2/saint-petersburg/search/гостиницы/",
+    "https://yandex.ru/maps/2/saint-petersburg/search/хостелы/",
+    "https://yandex.ru/maps/2/saint-petersburg/search/гостевые%20дома/",
+]
 
-MIN_PRICE = 100
-MAX_PRICE = 200
+def clean(text):
+    if not text:
+        return ""
+    return re.sub(r"\s+", " ", text).strip()
 
-found_items = []
+async def scrape_yandex_maps(limit=50):
+    results = []
+    seen_links = set()
 
-web_app = Flask(__name__)
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-dev-shm-usage"]
+        )
+        page = await browser.new_page()
 
+        for url in SEARCH_URLS:
+            if len(results) >= limit:
+                break
 
-@web_app.get("/")
-def home():
-    return "Bot is running"
+            await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            await page.wait_for_timeout(5000)
 
+            # скроллим список
+            for _ in range(12):
+                await page.mouse.wheel(0, 2500)
+                await page.wait_for_timeout(1200)
 
-def run_web():
-    port = int(os.getenv("PORT", 10000))
-    web_app.run(host="0.0.0.0", port=port)
+            cards = await page.locator("a[href*='/org/']").all()
 
+            links = []
+            for card in cards:
+                href = await card.get_attribute("href")
+                if href and "/org/" in href:
+                    if href.startswith("/"):
+                        href = "https://yandex.ru" + href
+                    if href not in seen_links:
+                        seen_links.add(href)
+                        links.append(href)
 
-def convert_to_rubles(text):
-    text = text.lower().replace(",", ".")
+            for link in links:
+                if len(results) >= limit:
+                    break
 
-    price_match = re.search(r"(\d+(?:\.\d+)?)\s*(₽|руб|rub)", text)
+                try:
+                    await page.goto(link, wait_until="domcontentloaded", timeout=60000)
+                    await page.wait_for_timeout(3000)
 
-    if price_match:
-        return float(price_match.group(1))
+                    title = clean(await page.locator("h1").first.text_content())
 
-    dollar_match = re.search(r"\$(\d+(?:\.\d+)?)", text)
+                    phone = ""
+                    phone_el = page.locator("a[href^='tel:']").first
+                    if await phone_el.count():
+                        phone = clean(await phone_el.text_content())
 
-    if dollar_match:
-        return float(dollar_match.group(1)) * 90
+                    site = ""
+                    site_el = page.locator("a[href^='http']").filter(has_text=re.compile(r"\.")).first
+                    if await site_el.count():
+                        site = await site_el.get_attribute("href") or ""
 
-    euro_match = re.search(r"€(\d+(?:\.\d+)?)", text)
+                    description_parts = []
 
-    if euro_match:
-        return float(euro_match.group(1)) * 100
+                    cats = await page.locator(".business-card-title-view__categories a, .business-categories-view__category").all()
+                    for c in cats[:5]:
+                        txt = clean(await c.text_content())
+                        if txt:
+                            description_parts.append(txt)
 
-    return None
+                    features = await page.locator(".business-features-view__valued-value, .business-features-view__bool-text").all()
+                    for f in features[:10]:
+                        txt = clean(await f.text_content())
+                        if txt:
+                            description_parts.append(txt)
 
+                    description = ", ".join(dict.fromkeys(description_parts))
 
-def parse_funpay():
-    headers = {
-        "User-Agent": "Mozilla/5.0"
-    }
+                    results.append({
+                        "Название отеля": title,
+                        "Официальный сайт": site,
+                        "Краткое описание": description,
+                        "Номер телефона": phone,
+                        "Ссылка на карточку в картах": link
+                    })
 
-    response = requests.get(FUNPAY_URL, headers=headers, timeout=20)
-    response.raise_for_status()
+                except Exception as e:
+                    print("Ошибка карточки:", link, e)
 
-    soup = BeautifulSoup(response.text, "html.parser")
+        await browser.close()
 
-    items = []
+    df = pd.DataFrame(results)
+    df.to_excel(FILE_NAME, index=False)
+    return FILE_NAME, len(results)
 
-    offers = soup.find_all("a", href=True)
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
 
-    for offer in offers:
-        text = offer.get_text(" ", strip=True)
-        href = offer["href"]
+    if text == "6666":
+        await update.message.reply_text("Собираю тестовую базу на 50 объектов...")
 
-        if not text:
-            continue
+        file_path, count = await scrape_yandex_maps(LIMIT)
 
-        rub_price = convert_to_rubles(text)
-
-        if rub_price is None:
-            continue
-
-        if MIN_PRICE <= rub_price <= MAX_PRICE:
-            url = href if href.startswith("http") else "https://funpay.com" + href
-
-            items.append({
-                "title": text[:120],
-                "price": int(rub_price),
-                "url": url
-            })
-
-    return items
-
-
-async def check_funpay(context: ContextTypes.DEFAULT_TYPE):
-    global found_items
-
-    try:
-        found_items = parse_funpay()
-        print(f"Найдено товаров: {len(found_items)}")
-
-    except Exception as e:
-        print(f"Ошибка парсинга: {e}")
-
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Бот работает. Напиши секретный код.")
-
-
-async def secret_code_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    message = update.message.text.strip()
-
-    if message != SECRET_CODE:
-        return
-
-    if not found_items:
-        await update.message.reply_text("0")
-        return
-
-    await update.message.reply_text(str(len(found_items)))
-
-    text = ""
-
-    for i, item in enumerate(found_items, start=1):
-        line = f"{i}. {item['price']} ₽ — {item['url']}\n"
-
-        if len(text) + len(line) > 3500:
-            await update.message.reply_text(text)
-            text = ""
-
-        text += line
-
-    if text:
-        await update.message.reply_text(text)
-
+        await update.message.reply_document(
+            document=open(file_path, "rb"),
+            filename=file_path,
+            caption=f"Готово. Собрано объектов: {count}"
+        )
+    else:
+        await update.message.reply_text("Напиши код 6666")
 
 def main():
-    if not BOT_TOKEN:
-        raise RuntimeError("Нет BOT_TOKEN")
-
-    if not FUNPAY_URL:
-        raise RuntimeError("Нет FUNPAY_URL")
-
-    threading.Thread(target=run_web, daemon=True).start()
-
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, secret_code_handler))
-
-    app.job_queue.run_repeating(
-        check_funpay,
-        interval=60,
-        first=5
-    )
-
+    app = Application.builder().token(TOKEN).build()
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.run_polling()
-
 
 if __name__ == "__main__":
     main()
